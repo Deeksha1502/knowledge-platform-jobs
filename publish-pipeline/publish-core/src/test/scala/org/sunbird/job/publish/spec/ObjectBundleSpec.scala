@@ -102,7 +102,6 @@ class ObjectBundleSpec extends FlatSpec with BeforeAndAfterAll with Matchers wit
       obj.getObjectBundle(data, objList, EcarPackageType.FULL)
     }
   }
-
 }
 
 class TestObjectBundle extends ObjectBundle {

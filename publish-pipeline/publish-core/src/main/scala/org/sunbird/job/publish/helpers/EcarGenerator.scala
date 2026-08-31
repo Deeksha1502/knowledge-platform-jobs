@@ -44,10 +44,6 @@ trait EcarGenerator extends ObjectBundle {
 			case _ => None
 		}
 	}
-	// Downloads its own copy of the artifact independently of getObjectBundle/ecar generation above,
-	// so it must bound that download itself the same way getObjectBundle bounds its downloads — via
-	// media_download_duration — otherwise a stalled artifact host would block this Flink task
-	// thread indefinitely (FileUtils.downloadFile sets no socket timeout of its own).
 	def computeArtifactHash(obj: ObjectData)(implicit ec: ExecutionContext, janusGraphUtil: JanusGraphUtil, config: PublishConfig): Option[(String, Option[String])] = {
 		val artifactUrl = obj.getString("artifactUrl", "")
 		if (StringUtils.isBlank(artifactUrl)) None

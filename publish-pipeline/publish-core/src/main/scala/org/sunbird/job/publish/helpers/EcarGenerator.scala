@@ -1,35 +1,61 @@
 package org.sunbird.job.publish.helpers
 
-import org.apache.commons.lang3.StringUtils
 import org.slf4j.LoggerFactory
 import org.sunbird.job.domain.`object`.DefinitionCache
 import org.sunbird.job.publish.config.PublishConfig
 import org.sunbird.job.publish.core.{DefinitionConfig, ObjectData}
-import org.sunbird.job.util.{CloudStorageUtil, FileUtils, JanusGraphUtil}
+import org.sunbird.job.util.{CloudStorageUtil, JanusGraphUtil}
 
 import java.io.File
-import java.nio.file.Files
-import java.security.MessageDigest
-import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.ExecutionContext
+
+case class EcarResult(urls: Map[String, String], artifactHash: Option[String] = None, prevArtifactHash: Option[String] = None) {
+	// staged for saveOnSuccess to persist alongside the rest of the metadata, rather than written to the graph immediately.
+	// prevArtifactHash is omitted (not written as null) when absent, since JanusGraphUtil.updateNode
+	// deletes any existing property whose key is present with a null value — omitting it instead
+	// leaves an existing prevArtifactHash untouched if this round failed to read it back.
+	def hashMeta: Map[String, AnyRef] = artifactHash.map(hash => Map[String, AnyRef]("artifactHash" -> hash) ++ prevArtifactHash.map(prev => Map[String, AnyRef]("prevArtifactHash" -> prev)).getOrElse(Map.empty)).getOrElse(Map.empty)
+}
 
 trait EcarGenerator extends ObjectBundle {
 
 	private[this] val logger = LoggerFactory.getLogger(classOf[EcarGenerator])
 
-	def generateEcar(obj: ObjectData, pkgType: List[String])(implicit ec: ExecutionContext, janusGraphUtil: JanusGraphUtil, cloudStorageUtil: CloudStorageUtil, config: PublishConfig, defCache: DefinitionCache, defConfig: DefinitionConfig): Map[String, String] = {
+	def generateEcar(obj: ObjectData, pkgType: List[String])(implicit ec: ExecutionContext, janusGraphUtil: JanusGraphUtil, cloudStorageUtil: CloudStorageUtil, config: PublishConfig, defCache: DefinitionCache, defConfig: DefinitionConfig): EcarResult = {
 		logger.info("Generating Ecar For : " + obj.identifier)
 		val enObjects: List[Map[String, AnyRef]] = getDataForEcar(obj).getOrElse(List())
-		pkgType.flatMap(pkg => Map(pkg -> generateEcar(obj, enObjects, pkg))).toMap
+		var artifactHash: Option[String] = None
+		var prevArtifactHash: Option[String] = None
+		val urls = pkgType.map(pkg => {
+			val (url, hashInfo) = generateEcar(obj, enObjects, pkg)
+			hashInfo.foreach { case (hash, prevHash) =>
+				artifactHash = Some(hash)
+				prevArtifactHash = prevHash
+			}
+			pkg -> url
+		}).toMap
+		EcarResult(urls, artifactHash, prevArtifactHash)
 	}
 
 	def getDataForEcar(obj: ObjectData): Option[List[Map[String, AnyRef]]]
 
-	// this method returns only cloud url for given pkg
-	def generateEcar(obj: ObjectData, objList: List[Map[String, AnyRef]], pkgType: String)(implicit ec: ExecutionContext, janusGraphUtil: JanusGraphUtil, cloudStorageUtil: CloudStorageUtil, config: PublishConfig, defCache: DefinitionCache, defConfig: DefinitionConfig): String = {
+	// returns the cloud url for the given pkg, plus (newHash, prevHash) when this pkgType's bundle included the object's own artifact
+	def generateEcar(obj: ObjectData, objList: List[Map[String, AnyRef]], pkgType: String)(implicit ec: ExecutionContext, janusGraphUtil: JanusGraphUtil, cloudStorageUtil: CloudStorageUtil, config: PublishConfig, defCache: DefinitionCache, defConfig: DefinitionConfig): (String, Option[(String, Option[String])]) = {
 		logger.info(s"Generating ${pkgType} Ecar For : " + obj.identifier)
-		val bundle: File = getObjectBundle(obj, objList, pkgType)
-		uploadFile(Some(bundle), obj.identifier, obj.dbObjType.replaceAll("Image", "")).getOrElse("")
+		val (bundle, artifactHash) = getObjectBundle(obj, objList, pkgType)
+		val hashInfo = artifactHash.map(hash => (hash, readPrevArtifactHash(obj)))
+		val url = uploadFile(Some(bundle), obj.identifier, obj.dbObjType.replaceAll("Image", "")).getOrElse("")
+		(url, hashInfo)
+	}
+
+	protected def readPrevArtifactHash(obj: ObjectData)(implicit janusGraphUtil: JanusGraphUtil): Option[String] = {
+		try {
+			Option(janusGraphUtil.getNodeProperties(obj.identifier)).flatMap(props => Option(props.get("artifactHash"))).map(_.toString)
+		} catch {
+			case e: Exception =>
+				logger.error(s"EcarGenerator ::: Unable to read previous artifactHash for ${obj.identifier}: ${e.getMessage}", e)
+				None
+		}
 	}
 
 	private def uploadFile(fileOption: Option[File], identifier: String, objectType: String)(implicit cloudStorageUtil: CloudStorageUtil): Option[String] = {
@@ -43,54 +69,5 @@ trait EcarGenerator extends ObjectBundle {
 			}
 			case _ => None
 		}
-	}
-	def computeArtifactHash(obj: ObjectData)(implicit ec: ExecutionContext, janusGraphUtil: JanusGraphUtil, config: PublishConfig): Option[(String, Option[String])] = {
-		val artifactUrl = obj.getString("artifactUrl", "")
-		if (StringUtils.isBlank(artifactUrl)) None
-		else {
-			val scratchDir = new File("/tmp" + File.separator + "artifact_hash_" + obj.identifier + "_" + System.currentTimeMillis)
-			try {
-				val duration = Duration.apply(config.getString("media_download_duration", "300 seconds"))
-				val artifactFile = Await.result(Future(FileUtils.downloadFile(artifactUrl, scratchDir.getAbsolutePath)), duration)
-				val newHash = sha256Hex(artifactFile)
-				Some((newHash, readPrevArtifactHash(obj)))
-			} catch {
-				case e: Exception =>
-					logger.error(s"EcarGenerator ::: Unable to compute artifactHash for ${obj.identifier}: ${e.getMessage}", e)
-					None
-			} finally {
-				FileUtils.deleteDirectory(scratchDir)
-			}
-		}
-	}
-	def hashMeta(hashInfo: Option[(String, Option[String])]): Map[String, AnyRef] =
-		hashInfo.map { case (hash, prevHash) =>
-			Map[String, AnyRef]("artifactHash" -> hash) ++ prevHash.map(prev => Map[String, AnyRef]("prevArtifactHash" -> prev)).getOrElse(Map.empty)
-		}.getOrElse(Map.empty)
-
-	protected def readPrevArtifactHash(obj: ObjectData)(implicit janusGraphUtil: JanusGraphUtil): Option[String] = {
-		try {
-			Option(janusGraphUtil.getNodeProperties(obj.identifier)).flatMap(props => Option(props.get("artifactHash"))).map(_.toString)
-		} catch {
-			case e: Exception =>
-				logger.error(s"EcarGenerator ::: Unable to read previous artifactHash for ${obj.identifier}: ${e.getMessage}", e)
-				None
-		}
-	}
-
-	private def sha256Hex(file: File): String = {
-		val digest = MessageDigest.getInstance("SHA-256")
-		val buffer = new Array[Byte](8192)
-		val input = Files.newInputStream(file.toPath)
-		try {
-			var bytesRead = input.read(buffer)
-			while (bytesRead != -1) {
-				digest.update(buffer, 0, bytesRead)
-				bytesRead = input.read(buffer)
-			}
-		} finally {
-			input.close()
-		}
-		digest.digest().map("%02x".format(_)).mkString
 	}
 }

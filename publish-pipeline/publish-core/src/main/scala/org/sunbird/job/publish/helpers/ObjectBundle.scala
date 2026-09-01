@@ -104,7 +104,6 @@ trait ObjectBundle {
     val downloadedMedias: List[(AnyRef, File)] = Await.result(downloadFiles(obj.identifier, downloadUrls, bundlePath), Duration.apply(duration))
     if (downloadUrls.nonEmpty && downloadedMedias.isEmpty)
       throw new InvalidInputException("Error Occurred While Downloading Bundle Media Files For : " + obj.identifier)
-    // hashed here, before createBundle deletes bundlePath in its finally block
     val artifactHash: Option[String] = findArtifactFile(downloadedMedias, obj.getString("artifactUrl", "")).flatMap(file => computeFileHash(obj.identifier, file))
     val manifestFile: File = getManifestFile(obj.identifier, objType, bundlePath, updatedObjList)
     val hierarchyFile: File = getHierarchyFile(obj, bundlePath).getOrElse(new File(bundlePath))

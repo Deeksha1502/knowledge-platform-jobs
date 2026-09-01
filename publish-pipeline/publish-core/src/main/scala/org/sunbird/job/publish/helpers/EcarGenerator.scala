@@ -10,10 +10,6 @@ import java.io.File
 import scala.concurrent.ExecutionContext
 
 case class EcarResult(urls: Map[String, String], artifactHash: Option[String] = None, prevArtifactHash: Option[String] = None) {
-	// staged for saveOnSuccess to persist alongside the rest of the metadata, rather than written to the graph immediately.
-	// prevArtifactHash is omitted (not written as null) when absent, since JanusGraphUtil.updateNode
-	// deletes any existing property whose key is present with a null value — omitting it instead
-	// leaves an existing prevArtifactHash untouched if this round failed to read it back.
 	def hashMeta: Map[String, AnyRef] = artifactHash.map(hash => Map[String, AnyRef]("artifactHash" -> hash) ++ prevArtifactHash.map(prev => Map[String, AnyRef]("prevArtifactHash" -> prev)).getOrElse(Map.empty)).getOrElse(Map.empty)
 }
 
@@ -39,7 +35,7 @@ trait EcarGenerator extends ObjectBundle {
 
 	def getDataForEcar(obj: ObjectData): Option[List[Map[String, AnyRef]]]
 
-	// returns the cloud url for the given pkg, plus (newHash, prevHash) when this pkgType's bundle included the object's own artifact
+	// this method returns only cloud url for given pkg
 	def generateEcar(obj: ObjectData, objList: List[Map[String, AnyRef]], pkgType: String)(implicit ec: ExecutionContext, janusGraphUtil: JanusGraphUtil, cloudStorageUtil: CloudStorageUtil, config: PublishConfig, defCache: DefinitionCache, defConfig: DefinitionConfig): (String, Option[(String, Option[String])]) = {
 		logger.info(s"Generating ${pkgType} Ecar For : " + obj.identifier)
 		val (bundle, artifactHash) = getObjectBundle(obj, objList, pkgType)

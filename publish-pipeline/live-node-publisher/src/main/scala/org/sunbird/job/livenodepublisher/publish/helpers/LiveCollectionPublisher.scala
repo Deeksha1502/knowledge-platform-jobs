@@ -155,7 +155,7 @@ trait LiveCollectionPublisher extends LiveObjectReader with SyncMessagesGenerato
     val variants: java.util.Map[String, java.util.Map[String, String]] = ecarMap.map { case (key, value) => key.toLowerCase -> Map[String, String]("ecarUrl" -> value, "size" -> httpUtil.getSize(value).toString).asJava }.asJava
     logger.info("CollectionPulisher ::: getObjectWithEcar ::: variants ::: " + variants)
 
-    val meta: Map[String, AnyRef] = Map("downloadUrl" -> ecarMap.getOrElse(EcarPackageType.SPINE, ""), "variants" -> variants, "size" -> httpUtil.getSize(ecarMap.getOrElse(EcarPackageType.SPINE, "")).asInstanceOf[AnyRef]) ++ ecarResult.hashMeta
+    val meta: Map[String, AnyRef] = Map("downloadUrl" -> ecarMap.getOrElse(EcarPackageType.SPINE, ""), "variants" -> variants, "size" -> httpUtil.getSize(ecarMap.getOrElse(EcarPackageType.SPINE, "")).asInstanceOf[AnyRef])
     new ObjectData(updatedObj.identifier, updatedObj.metadata ++ meta, updatedObj.extData, updatedObj.hierarchy)
   }
 
